@@ -1,0 +1,150 @@
+<?php
+
+namespace App\Http\Controllers\Dashboard;
+
+use App\Http\Controllers\Controller;
+use App\Models\Role;
+use App\Models\User;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\View\View;
+
+class UserController extends Controller
+{
+    public function index(): View
+    {
+        Gate::authorize('View User');
+
+        // Exclude system accounts from the list
+        $users = User::with('role')
+            ->whereNotIn('email', User::getSystemAccountEmails())
+            ->latest()
+            ->paginate(10);
+
+        return view('dashboard.pages.users.index', compact('users'));
+    }
+
+    public function create(): View
+    {
+        Gate::authorize('Create User');
+
+        $roles = Role::all();
+
+        return view('dashboard.pages.users.create', compact('roles'));
+    }
+
+    public function store(Request $request): RedirectResponse
+    {
+        Gate::authorize('Create User');
+
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users,email',
+            'password' => 'required|string|min:8|confirmed',
+            'role_id' => 'nullable|exists:roles,id',
+            'status' => 'required|in:active,inactive',
+            'phone' => 'nullable|string|max:255',
+            'agency' => 'nullable|string|max:255',
+            'currency' => 'nullable|string|max:255',
+        ]);
+
+        $user = User::create([
+            'name' => $validated['name'],
+            'email' => $validated['email'],
+            'password' => Hash::make($validated['password']),
+            'role_id' => $validated['role_id'] ?? null,
+            'status' => $validated['status'],
+            'phone' => $validated['phone'] ?? null,
+            'agency' => $validated['agency'] ?? null,
+            'currency' => $validated['currency'] ?? null,
+            'email_verified_at' => now(),
+        ]);
+
+        return redirect()->route('dashboard.users.index')
+            ->with('success', 'User created successfully.');
+    }
+
+    public function edit(User $user): View
+    {
+        Gate::authorize('Update User');
+
+        // Prevent editing system accounts
+        if ($user->isSystemAccount()) {
+            abort(403, 'Cannot edit system account.');
+        }
+
+        $roles = Role::all();
+
+        return view('dashboard.pages.users.edit', compact('user', 'roles'));
+    }
+
+    public function update(Request $request, User $user): RedirectResponse
+    {
+        Gate::authorize('Update User');
+
+        // Prevent updating system accounts
+        if ($user->isSystemAccount()) {
+            return redirect()->route('dashboard.users.index')
+                ->with('error', 'Cannot update system account.');
+        }
+
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users,email,' . $user->id,
+            'password' => 'nullable|string|min:8|confirmed',
+            'role_id' => 'nullable|exists:roles,id',
+            'status' => 'required|in:active,inactive',
+            'phone' => 'nullable|string|max:255',
+            'agency' => 'nullable|string|max:255',
+            'currency' => 'nullable|string|max:255',
+        ]);
+
+        $updateData = [
+            'name' => $validated['name'],
+            'email' => $validated['email'],
+            'role_id' => $validated['role_id'] ?? null,
+            'status' => $validated['status'],
+            'phone' => $validated['phone'] ?? null,
+            'agency' => $validated['agency'] ?? null,
+            'currency' => $validated['currency'] ?? null,
+        ];
+
+        if (! empty($validated['password'])) {
+            $updateData['password'] = Hash::make($validated['password']);
+        }
+
+        $user->update($updateData);
+
+        return redirect()->route('dashboard.users.index')
+            ->with('success', 'User updated successfully.');
+    }
+
+    public function destroy(User $user): RedirectResponse
+    {
+        Gate::authorize('Delete User');
+
+        if (! Auth::user()->isAdministrator()) {
+            abort(403, 'Only the main Admin can delete users.');
+        }
+
+        // Prevent deleting system accounts
+        if ($user->isSystemAccount()) {
+            return redirect()->route('dashboard.users.index')
+                ->with('error', 'Cannot delete system account.');
+        }
+
+        // Prevent user from deleting themselves
+        if (Auth::id() === $user->id) {
+            return redirect()->route('dashboard.users.index')
+                ->with('error', 'You cannot delete your own account.');
+        }
+
+        $user->delete();
+
+        return redirect()->route('dashboard.users.index')
+            ->with('success', 'User deleted successfully.');
+    }
+}

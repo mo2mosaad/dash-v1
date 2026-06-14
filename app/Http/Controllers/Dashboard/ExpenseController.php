@@ -1,0 +1,182 @@
+<?php
+
+namespace App\Http\Controllers\Dashboard;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\ExpenseRequest;
+use App\Http\Requests\FinanceSheetRequest;
+use App\Models\Expense;
+use App\Models\Media;
+use Carbon\Carbon;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Illuminate\View\View;
+
+class ExpenseController extends Controller
+{
+    public function index(): View
+    {
+        Gate::authorize('View Expense');
+
+        $expenses = Expense::query()
+            ->with('sheets')
+            ->latest('month')
+            ->paginate(12);
+
+        return view('dashboard.finance.expenses.index', compact('expenses'));
+    }
+
+    public function create(): View
+    {
+        Gate::authorize('Create Expense');
+
+        return view('dashboard.finance.expenses.create');
+    }
+
+    public function store(ExpenseRequest $request): RedirectResponse
+    {
+        Gate::authorize('Create Expense');
+
+        $expense = Expense::create($this->preparePayload($request));
+
+        if ($request->hasFile('sheet')) {
+            $this->storeSheet($expense, $request->file('sheet'));
+        }
+
+        return redirect()
+            ->route('dashboard.finance.expenses.index')
+            ->with('success', 'Expense record added successfully.');
+    }
+
+    public function edit(Expense $expense): View
+    {
+        Gate::authorize('Update Expense');
+
+        return view('dashboard.finance.expenses.edit', compact('expense'));
+    }
+
+    public function update(ExpenseRequest $request, Expense $expense): RedirectResponse
+    {
+        Gate::authorize('Update Expense');
+
+        $expense->update($this->preparePayload($request));
+
+        if ($request->boolean('remove_sheet')) {
+            $this->deleteSheet($expense);
+        }
+
+        if ($request->hasFile('sheet')) {
+            $this->storeSheet($expense, $request->file('sheet'));
+        }
+
+        return redirect()
+            ->route('dashboard.finance.expenses.index')
+            ->with('success', 'Expense record updated successfully.');
+    }
+
+    public function destroy(Expense $expense): RedirectResponse
+    {
+        Gate::authorize('Delete Expense');
+
+        $this->deleteSheet($expense);
+
+        $expense->delete();
+
+        return redirect()
+            ->route('dashboard.finance.expenses.index')
+            ->with('success', 'Expense record deleted successfully.');
+    }
+
+    public function uploadSheet(FinanceSheetRequest $request, Expense $expense): RedirectResponse
+    {
+        Gate::authorize('Upload Expense Sheet');
+
+        $this->storeSheet($expense, $request->file('sheet'));
+
+        return redirect()
+            ->route('dashboard.finance.expenses.index')
+            ->with('success', 'Expense sheet uploaded successfully.');
+    }
+
+    public function downloadSheet(Expense $expense, ?int $media = null)
+    {
+        Gate::authorize('Download Expense Sheet');
+
+        if ($media) {
+            $sheet = $expense->sheets()->findOrFail($media);
+        } else {
+            $sheet = $expense->sheet;
+        }
+
+        abort_if(! $sheet, 404);
+
+        $disk = Storage::disk('uploads');
+
+        abort_unless($sheet->path && $disk->exists($sheet->path), 404);
+
+        return $disk->download($sheet->path, $sheet->original_name);
+    }
+
+    public function destroySheet(Expense $expense, Media $media): RedirectResponse
+    {
+        Gate::authorize('Delete Expense');
+
+        $sheet = $expense->sheets()->findOrFail($media->id);
+        $disk = Storage::disk('uploads');
+
+        if ($sheet->path && $disk->exists($sheet->path)) {
+            $disk->delete($sheet->path);
+        }
+
+        $sheet->delete();
+
+        return redirect()
+            ->route('dashboard.finance.expenses.index')
+            ->with('success', 'Expense sheet deleted successfully.');
+    }
+
+    protected function preparePayload(ExpenseRequest $request): array
+    {
+        $data = $request->validated();
+        $data['month'] = Carbon::createFromFormat('Y-m', $data['month'])
+            ->startOfMonth()
+            ->toDateString();
+
+        return $data;
+    }
+
+    private function storeSheet(Expense $expense, UploadedFile $sheet): void
+    {
+        $filename = Str::uuid() . '.' . $sheet->getClientOriginalExtension();
+        $path = $sheet->storeAs('expenses', $filename, 'uploads');
+
+        $expense->media()->create([
+            'type' => 'expense_sheet',
+            'path' => $path,
+            'original_name' => $sheet->getClientOriginalName(),
+            'mime_type' => $sheet->getClientMimeType(),
+            'size' => $sheet->getSize(),
+            'note' => null,
+        ]);
+    }
+
+    private function deleteSheet(Expense $expense): void
+    {
+        $sheet = $expense->sheet;
+
+        if (! $sheet) {
+            return;
+        }
+
+        $disk = Storage::disk('uploads');
+
+        if ($sheet->path && $disk->exists($sheet->path)) {
+            $disk->delete($sheet->path);
+        }
+
+        $sheet->delete();
+    }
+}
